@@ -40,6 +40,7 @@ exports.run = run;
 const core = __importStar(require("@actions/core"));
 const core_1 = require("@actions/core");
 const github = __importStar(require("@actions/github"));
+const plugin_throttling_1 = require("@octokit/plugin-throttling");
 const github_1 = require("./github");
 const utils_1 = require("./utils");
 const MS_PER_DAY = 86400000;
@@ -231,7 +232,27 @@ async function run(fetchImpl) {
         core.info('Starting issue processing');
         const args = getAndValidateInputs();
         core.debug(JSON.stringify(args, null, 2));
-        const client = github.getOctokit(args.repoToken, { request: { fetch: fetchImpl || globalThis.fetch } });
+        const client = github.getOctokit(args.repoToken, {
+            request: { fetch: fetchImpl || globalThis.fetch },
+            throttle: {
+                onRateLimit: (retryAfter, options, octokit, retryCount) => {
+                    octokit.log.warn(`Request quota exhausted for request ${options.method} ${options.url}. Retrying after ${retryAfter} seconds!`);
+                    if (retryCount < 3) {
+                        // only retries 3 times
+                        octokit.log.info(`Retrying after ${retryAfter} seconds! ${retryCount} times`);
+                        return true;
+                    }
+                    return undefined;
+                },
+                onSecondaryRateLimit: (retryAfter, options, octokit) => {
+                    // does not retry, only logs a warning
+                    octokit.log.warn(`SecondaryRateLimit detected for request ${options.method} ${options.url}. Retrying after ${retryAfter} seconds!`);
+                    return undefined;
+                },
+            },
+        }, 
+        // biome-ignore lint/suspicious/noExplicitAny: required because https://github.com/actions/toolkit/issues/2283
+        plugin_throttling_1.throttling);
         await processIssues(client, args);
         core.info('Labelled issue processing complete');
         process.exitCode = 0;
